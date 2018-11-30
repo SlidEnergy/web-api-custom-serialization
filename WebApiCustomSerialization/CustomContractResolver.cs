@@ -18,6 +18,11 @@ namespace WebApiCustomSerialization
 		private readonly Dictionary<Type, CustomContractResolverConfig> _jsonObjectRules = new Dictionary<Type, CustomContractResolverConfig>();
 
 		/// <summary>
+		/// Словарь закэшированных контрактов.
+		/// </summary>
+		private readonly Dictionary<Type, JsonContract> cachedContracts = new Dictionary<Type, JsonContract>();
+
+		/// <summary>
 		/// Помечает тип для сериализации как объект, аналогично атрибуту JsonObject. 
 		/// Позволяет задать дополнительные правила для объекта.
 		/// </summary>
@@ -46,9 +51,16 @@ namespace WebApiCustomSerialization
 			if (type == (Type)null)
 				throw new ArgumentNullException(nameof(type));
 
-			foreach (Type t in _jsonObjectRules.Keys)
-				if (type == t || type.IsSubclassOf(t))
-					return this.CreateObjectContract(type);
+			if (_jsonObjectRules.ContainsKey(type))
+			{
+				if (cachedContracts.ContainsKey(type))
+					return cachedContracts[type];
+
+				var contract = this.CreateObjectContract(type);
+
+				cachedContracts.Add(type, contract);
+				return contract;
+			}
 
 			return base.ResolveContract(type);
 		}
@@ -60,23 +72,20 @@ namespace WebApiCustomSerialization
 		{
 			var list = base.CreateProperties(type, memberSerialization);
 
-			foreach (Type t in _jsonObjectRules.Keys)
+			if (_jsonObjectRules.ContainsKey(type))
 			{
-				if ((type == t || type.IsSubclassOf(t)))
+				foreach (string propertyName in _jsonObjectRules[type].JsonProperties)
 				{
-					foreach (string propertyName in _jsonObjectRules[t].JsonProperties)
-					{
-						MemberInfo field = type.GetField(propertyName, BindingFlags.NonPublic | BindingFlags.Instance);
+					MemberInfo field = type.GetField(propertyName, BindingFlags.NonPublic | BindingFlags.Instance);
 
-						var property = this.CreateProperty(field, memberSerialization);
-						property.Readable = true;
+					var property = this.CreateProperty(field, memberSerialization);
+					property.Readable = true;
 
-						// Если свойство с таким же именем уже есть, оно будет конфликтовать с новым.
-						if (list.Any(x => x.PropertyName == propertyName))
-							throw new Exception($"В классе {type.Name} или его родителе уже содержится свойство с таким же наименованием, как мы пытаемся добавить.");
+					// Если свойство с таким же именем уже есть, оно будет конфликтовать с новым.
+					if (list.Any(x => x.PropertyName == property.PropertyName))
+						throw new Exception($"В классе {type.Name} или его родителе уже содержится свойство с таким же наименованием, как мы пытаемся добавить.");
 
-						list.Add(property);
-					}
+					list.Add(property);
 				}
 			}
 
@@ -91,22 +100,19 @@ namespace WebApiCustomSerialization
 			var property = base.CreateProperty(member, memberSerialization);
 
 			// Удаляем свойства из коллекции, если нам нужно его игнорировать.
-			foreach (Type t in _jsonObjectRules.Keys)
+			if (_jsonObjectRules.ContainsKey(member.DeclaringType))
 			{
-				if ((member.DeclaringType == t || member.DeclaringType.IsSubclassOf(t)))
+				foreach (string propertyName in _jsonObjectRules[member.DeclaringType].JsonIgnores)
 				{
-					foreach (string propertyName in _jsonObjectRules[t].JsonIgnores)
+					if (propertyName.ToLower() == property.PropertyName.ToLower())
 					{
-						if (propertyName.ToLower() == property.PropertyName.ToLower())
-						{
-							// Есть несколько способов:
-							// - выставить флаг Ignore = true
-							// - задать делегат ShouldSerialize = i => false
-							// - не возвращать свойство, тогда оно не будет добавлено в коллекцию для сериализации.
-							// Возвращаем null, т.к. мы можем добавить другое свойство, которое при преобразовании 
-							// в camel case будет иметь такое-же наименование, и оно будет конфликтовать со старым.
-							return null;
-						}
+						// Есть несколько способов:
+						// - выставить флаг Ignore = true
+						// - задать делегат ShouldSerialize = i => false
+						// - не возвращать свойство, тогда оно не будет добавлено в коллекцию для сериализации.
+						// Возвращаем null, т.к. мы можем добавить другое свойство, которое при преобразовании 
+						// в camel case будет иметь такое-же наименование, и оно будет конфликтовать со старым.
+						return null;
 					}
 				}
 			}
